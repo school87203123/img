@@ -1,7 +1,6 @@
 import os
 import subprocess
 import time
-import cv2
 import yt_dlp
 import re
 import sys
@@ -12,7 +11,6 @@ from tkinter import simpledialog, messagebox
 IDM_PATH = r"E:\應用程式\Internet Download Manager\IDMan.exe"
 
 def sanitize_filename(filename):
-    """過濾 Windows 不允許的資料夾命名符號"""
     return re.sub(r'[\\/*?:"<>|]', "_", filename)
 
 def get_video_info(yt_url):
@@ -29,14 +27,12 @@ def main():
     root.withdraw()
     root.attributes("-topmost", True)
 
-    # 1. 自動定位路徑
     if getattr(sys, 'frozen', False):
         current_dir = os.path.dirname(sys.executable)
     else:
         current_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 2. 獲取網址與影片資訊
-    url = simpledialog.askstring("IDM 幀數自選模式", "1. 請貼上 YouTube 網址:")
+    url = simpledialog.askstring("FFmpeg 閃電模式", "1. 請貼上 YouTube 網址:")
     if not url: return
 
     try:
@@ -45,19 +41,17 @@ def main():
         messagebox.showerror("解析失敗", f"無法解析網址：{e}")
         return
 
-    # 3. 輸入設定：時間範圍 + 影格間隔
+    # 輸入設定
     start_t = simpledialog.askstring("時間設定", "2. 起始時間 (HH:MM:SS):", initialvalue="00:02:10")
     end_t = simpledialog.askstring("時間設定", "3. 結束時間 (HH:MM:SS):", initialvalue="00:02:20")
-    frame_interval = simpledialog.askstring("影格設定", "4. 每隔幾幀抓一張？\n(1=全抓, 30=約半秒一張, 60=約一秒一張)", initialvalue="1")
+    frame_interval = simpledialog.askstring("影格設定", "4. 每隔幾幀抓一張？", initialvalue="1")
     
     if not all([start_t, end_t, frame_interval]): return
-    frame_interval = int(frame_interval)
 
-    # 4. 建立資料夾
     final_output_dir = os.path.join(current_dir, video_title)
     if not os.path.exists(final_output_dir):
         os.makedirs(final_output_dir)
-
+    
     temp_video = os.path.join(final_output_dir, f"source_video.{ext}")
 
     # --- 階段 1: IDM 下載 ---
@@ -77,42 +71,27 @@ def main():
         time.sleep(3)
         print(f"下載中... 目前已載: {current_size // (1024*1024)} MB")
 
-    # --- 階段 2: 幀數跳轉擷取 ---
-    print(f"\n[階段 2] 開始依照間隔 {frame_interval} 擷取影格...")
-    cap = cv2.VideoCapture(temp_video)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    # --- 階段 2: FFmpeg 閃電擷取 (關鍵改動：不經過 Python 迴圈) ---
+    print(f"\n[階段 2] 啟動 FFmpeg 引擎進行精準擷取...")
     
-    # 換算起始與結束幀
-    h, m, s = map(int, start_t.split(':'))
-    start_frame = int((h*3600 + m*60 + s) * fps)
+    # -ss: 開始時間, -to: 結束時間, select: 每 N 幀選一張
+    ffmpeg_cmd = [
+        "ffmpeg", 
+        "-ss", start_t, 
+        "-to", end_t, 
+        "-i", temp_video,
+        "-vf", f"select='not(mod(n,{frame_interval}))'",
+        "-vsync", "vfr",
+        "-q:v", "2", 
+        os.path.join(final_output_dir, "%05d.jpg")
+    ]
     
-    eh, em, es = map(int, end_t.split(':'))
-    end_frame = int((eh*3600 + em*60 + es) * fps)
-
-    current_f = start_frame
-    saved_count = 0
-
-    while current_f <= end_frame:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, current_f)
-        ret, frame = cap.read()
-        if not ret: break
-        
-        saved_count += 1
-        # 存檔依然使用流水號，保持資料夾整潔
-        filename = os.path.join(final_output_dir, f"{saved_count:05d}.jpg")
-        _, im_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
-        im_buf.tofile(filename)
-        
-        current_f += frame_interval # 跳轉到下一目標幀
-        
-        if saved_count % 20 == 0:
-            print(f"已噴出 {saved_count} 張照片... 目前幀數: {current_f}", end='\r')
-
-    cap.release()
-    print(f"\n[完成] 任務結束，共存下 {saved_count} 張照片。")
+    start_process_time = time.time()
+    subprocess.run(ffmpeg_cmd)
+    end_process_time = time.time()
 
     # --- 階段 3: 清理 ---
-    keep_video = messagebox.askyesno("完成", f"已在「{video_title}」存入 {saved_count} 張照片！\n\n是否要保留原始影片檔？")
+    keep_video = messagebox.askyesno("完成", f"處理耗時: {end_process_time - start_process_time:.2f} 秒\n\n是否保留原始影片檔？")
     if not keep_video:
         try: os.remove(temp_video)
         except: pass
