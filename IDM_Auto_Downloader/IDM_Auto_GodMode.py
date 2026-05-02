@@ -3,58 +3,77 @@ import subprocess
 import time
 import cv2
 import yt_dlp
+import re
+import sys
 import tkinter as tk
-from tkinter import simpledialog, filedialog, messagebox
+from tkinter import simpledialog, messagebox
 
 # 【設定】請確認你的 IDM 安裝路徑
 IDM_PATH = r"E:\應用程式\Internet Download Manager\IDMan.exe"
 
-def get_real_url(yt_url):
-    """解鎖 4K/8K：抓取最高解析度的影像軌"""
-    print("[偵查] 正在解析 YouTube 隱藏的最高畫質連結...")
+def sanitize_filename(filename):
+    """資管系專業：過濾 Windows 不允許的資料夾命名符號"""
+    return re.sub(r'[\\/*?:"<>|]', "_", filename)
+
+def get_video_info(yt_url):
+    """偵查：獲取真實連結與影片標題"""
+    print("[偵查] 正在解析 YouTube 影片資訊...")
     ydl_opts = {
-        # 'bestvideo' 會抓取最高解析度 (4K/8K)，不再受限於 MP4 的 1080p 限制
         'format': 'bestvideo', 
         'quiet': True,
         'no_warnings': True
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(yt_url, download=False)
+        title = info.get('title', 'Untitled_Video')
+        clean_title = sanitize_filename(title)
         width = info.get('width')
         height = info.get('height')
-        print(f"✅ 成功偵測到目標解析度: {width} x {height}")
-        return info['url'], info.get('ext', 'mp4')
+        print(f"✅ 標題: {clean_title}")
+        print(f"✅ 解析度: {width} x {height}")
+        return info['url'], info.get('ext', 'mp4'), clean_title
 
 def main():
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
 
-    url = simpledialog.askstring("IDM 神級模式", "1. 請貼上 YouTube 網址:")
+    # 1. 自動獲取目前程式執行的目錄
+    if getattr(sys, 'frozen', False):
+        current_dir = os.path.dirname(sys.executable)
+    else:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 2. 輸入網址
+    url = simpledialog.askstring("IDM 特定秒數模式", "1. 請貼上 YouTube 網址:")
     if not url: return
 
-    # 獲取真實直連位址
+    # 解析影片資訊
     try:
-        real_video_url, ext = get_real_url(url)
+        real_video_url, ext, video_title = get_video_info(url)
     except Exception as e:
         messagebox.showerror("解析失敗", f"無法解析網址：{e}")
         return
 
-    start_t = simpledialog.askstring("時間", "2. 起始時間 (HH:MM:SS):", initialvalue="00:02:10")
-    end_t = simpledialog.askstring("時間", "3. 結束時間 (HH:MM:SS):", initialvalue="00:02:20")
-    
-    output_dir = filedialog.askdirectory(title="4. 選擇儲存資料夾")
-    if not output_dir: return
+    # 3. 輸入時間
+    start_t = simpledialog.askstring("時間設定", "2. 起始時間 (HH:MM:SS):", initialvalue="00:02:10")
+    end_t = simpledialog.askstring("時間設定", "3. 結束時間 (HH:MM:SS):", initialvalue="00:02:20")
+    if not start_t or not end_t: return
 
-    # 建立一個唯一的暫存檔名，避免衝突
-    temp_video = os.path.join(output_dir, f"raw_video_temp.{ext}")
+    # 4. 自動建立影片標題資料夾 (零點擊邏輯)
+    final_output_dir = os.path.join(current_dir, video_title)
+    if not os.path.exists(final_output_dir):
+        os.makedirs(final_output_dir)
+        print(f"[建立] 已自動創建資料夾：{video_title}")
 
-    # 呼叫 IDM 下載
-    print(f"\n[階段 1] 正在啟動 IDM 暴力下載 (最高畫質)...")
-    idm_cmd = [IDM_PATH, "/d", real_video_url, "/p", output_dir, "/f", f"raw_video_temp.{ext}", "/n", "/q"]
+    # 暫存檔路徑
+    temp_video = os.path.join(final_output_dir, f"raw_video_source.{ext}")
+
+    # --- 階段 1: IDM 下載 ---
+    print(f"\n[階段 1] 啟動 IDM 下載中...")
+    idm_cmd = [IDM_PATH, "/d", real_video_url, "/p", final_output_dir, "/f", f"raw_video_source.{ext}", "/n", "/q"]
     subprocess.run(idm_cmd)
 
-    # 監控下載進度
     print("等待下載完成...")
     while not os.path.exists(temp_video):
         time.sleep(2)
@@ -68,8 +87,8 @@ def main():
         time.sleep(3)
         print(f"下載中... 目前已載: {current_size // (1024*1024)} MB")
 
-    # [階段 2] 極致噴圖
-    print("\n[階段 2] 下載完成，開始噴圖...")
+    # --- 階段 2: 精準噴圖 (流水號命名) ---
+    print(f"\n[階段 2] 開始擷取影格...")
     cap = cv2.VideoCapture(temp_video)
     
     # 時間跳轉邏輯
@@ -88,30 +107,31 @@ def main():
         if not ret or curr_msec > end_msec:
             break
         
-        filename = os.path.join(output_dir, f"frame_{saved_count:05d}.jpg")
+        # 存檔名稱改為純數字流水號 00001.jpg
+        saved_count += 1
+        filename = os.path.join(final_output_dir, f"{saved_count:05d}.jpg")
+        
         _, im_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
         im_buf.tofile(filename)
-        saved_count += 1
+        
         if saved_count % 50 == 0:
-            print(f"已存 {saved_count} 張照片...", end='\r')
+            print(f"已噴出 {saved_count} 張照片...", end='\r')
 
     cap.release()
-    print("\n[完成] 影格擷取完畢。")
+    print(f"\n[完成] 影格擷取完畢，共產出 {saved_count} 張照片。")
 
-    # ==========================================
-    # 新功能：自動問詢是否刪除影片
-    # ==========================================
-    keep_video = messagebox.askyesno("任務完成", f"共產出 {saved_count} 張最高畫質照片！\n\n是否要保留下載的原始影片檔？\n(選「否」將自動刪除以節省空間)")
+    # --- 階段 3: 清理 ---
+    keep_video = messagebox.askyesno("任務完成", f"已在資料夾「{video_title}」中存入 {saved_count} 張最高畫質照片！\n\n是否要保留下載的影片檔？")
     
     if not keep_video:
         try:
             if os.path.exists(temp_video):
                 os.remove(temp_video)
-                print(f"[清理] 已刪除暫存影片：{temp_video}")
+                print(f"[清理] 已刪除暫存影片。")
         except Exception as e:
             print(f"[警告] 無法刪除檔案: {e}")
-    else:
-        print(f"[保留] 影片檔已存於: {temp_video}")
+
+    print("\n[結束] 所有檔案已歸檔於：" + final_output_dir)
 
 if __name__ == "__main__":
     main()
